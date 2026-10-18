@@ -29,7 +29,6 @@ const dirLabel: Record<Direction, string> = { LONG: "شراء", SHORT: "بيع",
 
 function Dashboard() {
   const [candles, setCandles] = useState<Candle[]>([]);
-  const [live, setLive] = useState(false);
   const [equity, setEquity] = useState(10000);
   const [alerts, setAlerts] = useState(true);
   const [trades, setTrades] = useState<Trade[]>([]);
