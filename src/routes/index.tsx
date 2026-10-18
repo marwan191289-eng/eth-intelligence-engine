@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ClientOnly } from "@tanstack/react-router";
 import { useMarketData } from "@/hooks/use-market-data";
-import { backtest, computeSignal, positionSize, type Candle, type Direction } from "@/lib/engine";
+import { backtest, computeSignal, positionSize, type Direction } from "@/lib/engine";
 
 const PriceChart = lazy(() => import("@/components/PriceChart"));
 
@@ -28,7 +28,6 @@ const fmt = (n: number, d = 2) => n.toLocaleString("en-US", { minimumFractionDig
 const dirLabel: Record<Direction, string> = { LONG: "شراء", SHORT: "بيع", NEUTRAL: "انتظار" };
 
 function Dashboard() {
-  const [candles, setCandles] = useState<Candle[]>([]);
   const [equity, setEquity] = useState(10000);
   const [alerts, setAlerts] = useState(true);
   const [trades, setTrades] = useState<Trade[]>([]);
