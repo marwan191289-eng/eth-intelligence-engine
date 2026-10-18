@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ClientOnly } from "@tanstack/react-router";
 import { useMarketData } from "@/hooks/use-market-data";
-import { backtest, computeSignal, positionSize, type Direction } from "@/lib/engine";
+import { applyFilters, backtestFiltered, DEFAULT_FILTERS, type Filters, computeSignal, positionSize, type Direction } from "@/lib/engine";
 
 const PriceChart = lazy(() => import("@/components/PriceChart"));
 
@@ -49,8 +49,11 @@ function Dashboard() {
   const [perm, setPerm] = useState<NotificationPermission | "unsupported">("default");
   useEffect(() => { setPerm(typeof Notification === "undefined" ? "unsupported" : Notification.permission); }, []);
 
-  const sig = useMemo(() => (candles.length > 50 ? computeSignal(candles) : null), [candles]);
-  const bt = useMemo(() => (candles.length > 100 ? backtest(candles) : null), [candles.length > 0 ? candles[candles.length - 1].time : 0]);
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const sig = useMemo(() => (candles.length > 50 ? applyFilters(candles, candles.length - 1, computeSignal(candles), filters) : null), [candles, filters]);
+  const lastT = candles.length > 0 ? candles[candles.length - 1].time : 0;
+  const bt = useMemo(() => (candles.length > 300 ? backtestFiltered(candles.slice(0, -1), filters, 0.1, 250) : null), [lastT, filters]);
+  const btRaw = useMemo(() => (candles.length > 300 ? backtestFiltered(candles.slice(0, -1), { htfTrend: false, volume: false }, 0.1, 250) : null), [lastT]);
   const size = sig ? positionSize(equity, RISK, sig.price, sig.stop) : null;
 
   // Alerts on direction change
@@ -177,7 +180,17 @@ function Dashboard() {
           </div>
 
           <div className="panel p-5">
-            <h2 className="mb-3 font-semibold">اختبار رجعي (آخر 500 شمعة)</h2>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="font-semibold">اختبار رجعي (آخر 750 شمعة، شامل رسوم 0.1%)</h2>
+              <div className="flex gap-2 text-xs">
+                {([["htfTrend", "تأكيد الفريم الأعلى"], ["volume", "فلتر الحجم"]] as const).map(([k, l]) => (
+                  <button key={k} onClick={() => setFilters((f) => ({ ...f, [k]: !f[k] }))}
+                    className={`rounded-md border px-3 py-1 ${filters[k] ? "border-primary text-primary" : "border-border text-muted-foreground"}`}>
+                    {filters[k] ? "✓ " : ""}{l}
+                  </button>
+                ))}
+              </div>
+            </div>
             {bt ? (
               <div className="grid grid-cols-2 gap-4 font-mono text-sm sm:grid-cols-5">
                 <Stat k="عدد الإشارات" v={String(bt.trades)} />
@@ -187,6 +200,12 @@ function Dashboard() {
                 <Stat k="أقصى تراجع" v={`${bt.maxDD.toFixed(2)}R`} />
               </div>
             ) : <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+            {bt && btRaw && (
+              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                بدون فلاتر: {btRaw.trades} إشارة، {btRaw.pnlR.toFixed(2)}R.{" "}
+                {bt.expectancy > 0 ? "النتيجة الحالية إيجابية على هذه الفترة فقط — لا تضمن المستقبل." : "لا توجد أفضلية مؤكدة بعد الرسوم — استخدمها للتحليل لا للتداول الحقيقي."}
+              </p>
+            )}
           </div>
 
           <div className="panel p-5">

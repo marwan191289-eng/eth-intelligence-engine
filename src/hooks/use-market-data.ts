@@ -19,7 +19,7 @@ export function useMarketData() {
       loading = true;
       for (const endpoint of ENDPOINTS) {
         try {
-          const response = await fetch(`${endpoint}/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=500`, { signal: controller.signal });
+          const response = await fetch(`${endpoint}/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=1000`, { signal: controller.signal });
           if (!response.ok) throw new Error("Market unavailable");
           const rows: unknown = await response.json();
           if (!Array.isArray(rows) || rows.length < 51) throw new Error("Incomplete candles");
@@ -50,7 +50,7 @@ export function useMarketData() {
             if (!last || candle.time < last.time) return prev;
             if (candle.time === last.time) return [...prev.slice(0, -1), candle];
             if (candle.time > last.time + 300) { void load(); return prev; }
-            return [...prev.slice(-499), candle];
+            return [...prev.slice(-999), candle];
           });
           setUpdatedAt(Date.now());
           setStatus("live");
