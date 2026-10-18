@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ClientOnly } from "@tanstack/react-router";
+import { useMarketData } from "@/hooks/use-market-data";
 import { backtest, computeSignal, positionSize, type Candle, type Direction } from "@/lib/engine";
 
 const PriceChart = lazy(() => import("@/components/PriceChart"));
@@ -19,8 +20,6 @@ export const Route = createFileRoute("/")({
   component: Dashboard,
 });
 
-const REST = "https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=500";
-const WS = "wss://stream.binance.com:9443/ws/ethusdt@kline_5m";
 const RISK = 1;
 
 type Trade = { id: number; dir: Direction; entry: number; stop: number; target: number; qty: number; time: number; exit?: number; pnl?: number };
@@ -46,29 +45,11 @@ function Dashboard() {
   }, []);
   useEffect(() => { localStorage.setItem("ethi", JSON.stringify({ equity, trades })); }, [equity, trades]);
 
-  useEffect(() => {
-    let ws: WebSocket | null = null, closed = false, retry: ReturnType<typeof setTimeout>;
-    fetch(REST).then((r) => r.json()).then((rows: any[]) => {
-      setCandles(rows.map((k) => ({ time: k[0] / 1000, open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5] })));
-      const connect = () => {
-        ws = new WebSocket(WS);
-        ws.onopen = () => setLive(true);
-        ws.onclose = () => { setLive(false); if (!closed) retry = setTimeout(connect, 3000); };
-        ws.onmessage = (e) => {
-          const k = JSON.parse(e.data).k;
-          const c: Candle = { time: k.t / 1000, open: +k.o, high: +k.h, low: +k.l, close: +k.c, volume: +k.v };
-          setCandles((prev) => {
-            if (!prev.length) return prev;
-            const last = prev[prev.length - 1];
-            if (last.time === c.time) return [...prev.slice(0, -1), c];
-            return [...prev.slice(-499), c];
-          });
-        };
-      };
-      connect();
-    });
-    return () => { closed = true; clearTimeout(retry); ws?.close(); };
-  }, []);
+  const market = useMarketData();
+  const { candles, stale, status } = market;
+  const live = status === "live" && !stale;
+  const [perm, setPerm] = useState<NotificationPermission | "unsupported">("default");
+  useEffect(() => { setPerm(typeof Notification === "undefined" ? "unsupported" : Notification.permission); }, []);
 
   const sig = useMemo(() => (candles.length > 50 ? computeSignal(candles) : null), [candles]);
   const bt = useMemo(() => (candles.length > 100 ? backtest(candles) : null), [candles.length > 0 ? candles[candles.length - 1].time : 0]);
@@ -81,7 +62,7 @@ function Dashboard() {
     lastDir.current = sig.direction;
     setHistory((h) => [{ t: Date.now(), dir: sig.direction, conf: sig.confidence, price: sig.price }, ...h].slice(0, 30));
     if (prev !== "NEUTRAL" || sig.direction !== "NEUTRAL") {
-      if (alerts && sig.direction !== "NEUTRAL" && typeof Notification !== "undefined" && Notification.permission === "granted") {
+      if (alerts && !stale && sig.direction !== "NEUTRAL" && typeof Notification !== "undefined" && Notification.permission === "granted") {
         new Notification(`ETH ${dirLabel[sig.direction]} — ثقة ${sig.confidence}%`, { body: `السعر ${fmt(sig.price)} | وقف ${fmt(sig.stop)} | هدف ${fmt(sig.target)}` });
       }
     }
@@ -89,7 +70,7 @@ function Dashboard() {
 
   // Close paper trades on stop / target
   useEffect(() => {
-    if (!sig) return;
+    if (!sig || stale) return;
     const p = sig.price;
     let realized = 0;
     const next = trades.map((t) => {
@@ -105,13 +86,28 @@ function Dashboard() {
     if (realized !== 0) { setTrades(next); setEquity((e) => e + realized); }
   }, [sig?.price]);
 
+  const closeTrade = (id: number) => {
+    if (!sig || stale) return;
+    const p = sig.price;
+    let realized = 0;
+    setTrades((all) => all.map((t) => {
+      if (t.id !== id || t.exit !== undefined) return t;
+      const pnl = (t.dir === "LONG" ? p - t.entry : t.entry - p) * t.qty;
+      realized = pnl;
+      return { ...t, exit: p, pnl };
+    }));
+    setEquity((e) => e + realized);
+  };
+
   const openTrade = () => {
-    if (!sig || !size || sig.direction === "NEUTRAL") return;
+    if (stale || !sig || !size || sig.direction === "NEUTRAL") return;
     setTrades((t) => [{ id: Date.now(), dir: sig.direction, entry: sig.price, stop: sig.stop, target: sig.target, qty: size.qty, time: Date.now() }, ...t]);
   };
 
   const toggleAlerts = async () => {
-    if (!alerts && typeof Notification !== "undefined" && Notification.permission !== "granted") await Notification.requestPermission();
+    if (!alerts && typeof Notification !== "undefined" && Notification.permission === "default") {
+      setPerm(await Notification.requestPermission());
+    }
     setAlerts(!alerts);
   };
 
@@ -133,10 +129,13 @@ function Dashboard() {
           <div className="flex items-center gap-3 text-sm">
             <span className="flex items-center gap-2 rounded-full border border-border px-3 py-1 font-mono text-xs">
               <span className={`h-2 w-2 rounded-full ${live ? "bg-bull animate-pulse" : "bg-bear"}`} />
-              {live ? "Binance LIVE" : "جارٍ الاتصال…"}
+              {live ? "Binance LIVE" : status === "error" ? "انقطع الاتصال" : status === "connecting" ? "جارٍ الاتصال…" : "بيانات متأخرة"}
             </span>
+            {(status === "error" || stale) && status !== "connecting" && (
+              <button onClick={market.retry} className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-secondary">إعادة الاتصال</button>
+            )}
             <button onClick={toggleAlerts} className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-secondary">
-              التنبيهات: {alerts ? "مفعّلة" : "متوقفة"}
+              التنبيهات: {!alerts ? "متوقفة" : perm === "granted" ? "مفعّلة" : perm === "denied" ? "محظورة من المتصفح" : perm === "unsupported" ? "غير مدعومة" : "بانتظار الإذن"}
             </button>
           </div>
         </div>
@@ -198,7 +197,7 @@ function Dashboard() {
               <div className="overflow-x-auto">
                 <table className="w-full font-mono text-xs">
                   <thead className="text-muted-foreground"><tr className="text-right">
-                    <th className="py-2">الاتجاه</th><th>الدخول</th><th>الوقف</th><th>الهدف</th><th>الكمية</th><th>الخروج</th><th>الربح</th>
+                    <th className="py-2">الاتجاه</th><th>الدخول</th><th>الوقف</th><th>الهدف</th><th>الكمية</th><th>الخروج</th><th>الربح</th><th></th>
                   </tr></thead>
                   <tbody>
                     {trades.slice(0, 15).map((t) => (
@@ -207,6 +206,7 @@ function Dashboard() {
                         <td>{fmt(t.entry)}</td><td>{fmt(t.stop)}</td><td>{fmt(t.target)}</td><td>{t.qty.toFixed(4)}</td>
                         <td>{t.exit ? fmt(t.exit) : "مفتوحة"}</td>
                         <td className={t.pnl === undefined ? "" : t.pnl >= 0 ? "text-bull" : "text-bear"}>{t.pnl === undefined ? "—" : fmt(t.pnl)}</td>
+                        <td>{t.exit === undefined && <button onClick={() => closeTrade(t.id)} disabled={stale} className="rounded border border-border px-2 py-0.5 text-xs hover:bg-secondary disabled:opacity-40">إغلاق</button>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -241,10 +241,11 @@ function Dashboard() {
               <Row k="الكمية" v={size ? `${size.qty.toFixed(4)} ETH` : "—"} />
               <Row k="حجم المركز" v={size ? `${fmt(size.notional)} USDT` : "—"} />
             </div>
-            <button onClick={openTrade} disabled={!sig || sig.direction === "NEUTRAL"}
+            <button onClick={openTrade} disabled={stale || !sig || sig.direction === "NEUTRAL"}
               className="mt-4 w-full rounded-md bg-primary py-2.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-40">
               فتح صفقة ورقية
             </button>
+            {stale && <p className="mt-2 text-xs text-bear">الأسعار غير محدّثة — التداول الورقي متوقف مؤقتًا.</p>}
           </div>
 
           <div className="panel p-5">
