@@ -40,3 +40,31 @@ describe("five-minute execution", () => {
     expect(positionSize(NaN, 1, 2400, 2380).qty).toBe(0);
   });
 });
+
+import { applyFilters, backtestFiltered } from "./engine";
+describe("filters", () => {
+  const mk = (n: number, vol: (i: number) => number) => Array.from({ length: n }, (_, i) => {
+    const p = 100 + i * 0.5; return { time: i * 300, open: p - 0.2, high: p + 0.5, low: p - 0.5, close: p, volume: vol(i) };
+  });
+  it("blocks a signal when volume is not above 1.2x average", () => {
+    const c = mk(300, () => 10);
+    const s = { ...computeSignal(c), direction: "LONG" as const };
+    expect(applyFilters(c, 299, s, { htfTrend: false, volume: true }).direction).toBe("NEUTRAL");
+  });
+  it("keeps a long when higher timeframe is up and volume spikes", () => {
+    const c = mk(300, (i) => (i === 299 ? 50 : 10));
+    const s = { ...computeSignal(c), direction: "LONG" as const };
+    expect(applyFilters(c, 299, s, { htfTrend: true, volume: true }).direction).toBe("LONG");
+  });
+  it("blocks a short against an up higher-timeframe trend", () => {
+    const c = mk(300, (i) => (i === 299 ? 50 : 10));
+    const s = { ...computeSignal(c), direction: "SHORT" as const };
+    expect(applyFilters(c, 299, s, { htfTrend: true, volume: false }).direction).toBe("NEUTRAL");
+  });
+  it("fees reduce backtest result", () => {
+    const c = mk(300, () => 10);
+    const off = { htfTrend: false, volume: false };
+    const a = backtestFiltered(c, off, 0), b = backtestFiltered(c, off, 0.1);
+    if (a.trades) expect(b.pnlR).toBeLessThan(a.pnlR);
+  });
+});

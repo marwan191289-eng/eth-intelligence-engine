@@ -128,3 +128,53 @@ export function backtest(c: Candle[], start = 50) {
   }
   return { trades, winRate: trades ? (wins / trades) * 100 : 0, pnlR, expectancy: trades ? pnlR / trades : 0, maxDD };
 }
+
+export type Filters = { htfTrend: boolean; volume: boolean };
+export const DEFAULT_FILTERS: Filters = { htfTrend: true, volume: true };
+
+/** Higher-timeframe proxy: EMA96 (~8h) vs EMA240 (~20h) on 5m closes; volume must beat 1.2x the 20-candle average. */
+export function applyFilters(c: Candle[], i: number, s: Signal, f: Filters, closesEma?: { fast: number[]; slow: number[] }): Signal {
+  if (s.direction === "NEUTRAL") return s;
+  const reasons = [...s.reasons];
+  let blocked = false;
+  if (f.htfTrend) {
+    const closes = c.map((x) => x.close);
+    const fast = closesEma?.fast ?? ema(closes.slice(0, i + 1), 96);
+    const slow = closesEma?.slow ?? ema(closes.slice(0, i + 1), 240);
+    const up = c[i].close > slow[i] && fast[i] > slow[i];
+    const down = c[i].close < slow[i] && fast[i] < slow[i];
+    const ok = i >= 240 && (s.direction === "LONG" ? up : down);
+    reasons.push(ok ? "الفريم الأعلى يؤكد الاتجاه" : "الفريم الأعلى لا يؤكد — تم الحجب");
+    if (!ok) blocked = true;
+  }
+  if (f.volume) {
+    const avg = c.slice(Math.max(0, i - 20), i).reduce((a, x) => a + x.volume, 0) / Math.min(20, Math.max(1, i));
+    const ok = c[i].volume > 1.2 * avg;
+    reasons.push(ok ? "حجم التداول أعلى من المتوسط" : "حجم تداول ضعيف — تم الحجب");
+    if (!ok) blocked = true;
+  }
+  return blocked ? { ...s, direction: "NEUTRAL", reasons } : { ...s, reasons };
+}
+
+/** Same as backtest() but with filters and a round-trip fee (percent of entry) deducted from every trade. */
+export function backtestFiltered(c: Candle[], f: Filters, feePct = 0.1, start = 50) {
+  const closes = c.map((x) => x.close);
+  const pre = { fast: ema(closes, 96), slow: ema(closes, 240) };
+  let trades = 0, wins = 0, pnlR = 0, peak = 0, maxDD = 0;
+  for (let i = Math.max(50, Math.floor(start)); i < c.length - 1; i++) {
+    const s = applyFilters(c, i, computeSignal(c, i), f, pre);
+    if (s.direction === "NEUTRAL") continue;
+    const entry = c[i + 1].open;
+    const risk = 1.5 * s.atr;
+    const stop = entry + (s.direction === "SHORT" ? 1 : -1) * risk;
+    const target = entry + (s.direction === "SHORT" ? -1 : 1) * 2 * s.atr;
+    const { r } = evaluateNextCandle(s.direction, entry, stop, target, c[i + 1]);
+    const net = r - (entry * feePct) / 100 / risk;
+    trades++;
+    if (net > 0) wins++;
+    pnlR += net;
+    peak = Math.max(peak, pnlR);
+    maxDD = Math.max(maxDD, peak - pnlR);
+  }
+  return { trades, winRate: trades ? (wins / trades) * 100 : 0, pnlR, expectancy: trades ? pnlR / trades : 0, maxDD };
+}
